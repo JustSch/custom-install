@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 from events import Events
 
-from pyctr.crypto import CryptoEngine, Keyslot
+from pyctr.crypto import CryptoEngine, Keyslot, load_seeddb
 from pyctr.type.cia import CIAReader, CIASection
 from pyctr.type.ncch import NCCHSection
 from pyctr.util import roundup
@@ -134,7 +134,7 @@ class CustomInstall:
 
     cia: CIAReader
 
-    def __init__(self, boot9, seeddb, movable, cias, sd, skip_contents=False):
+    def __init__(self, boot9, seeddb, movable, cias, sd, cifinish_out=None, skip_contents=False):
         self.event = Events()
         self.log_lines = []  # Stores all info messages for user to view
 
@@ -144,6 +144,7 @@ class CustomInstall:
         self.cias = cias
         self.sd = sd
         self.skip_contents = skip_contents
+        self.cifinish_out = cifinish_out
         self.movable = movable
 
     def copy_with_progress(self, src: BinaryIO, dst: BinaryIO, size: int, path: str):
@@ -162,26 +163,33 @@ class CustomInstall:
         # TODO: Move a lot of these into their own methods
         self.log("Finding path to install to...")
         [sd_path, id1s] = self.get_sd_path()
-        try:
-            if len(id1s) > 1:
-                raise SDPathError(f'There are multiple id1 directories for id0 {crypto.id0.hex()}, '
-                                  f'please remove extra directories')
-            elif len(id1s) == 0:
-                raise SDPathError(f'Could not find a suitable id1 directory for id0 {crypto.id0.hex()}')
-        except SDPathError:
-            self.log("")
+        if len(id1s) > 1:
+            raise SDPathError(f'There are multiple id1 directories for id0 {crypto.id0.hex()}, '
+                              f'please remove extra directories')
+        elif len(id1s) == 0:
+            raise SDPathError(f'Could not find a suitable id1 directory for id0 {crypto.id0.hex()}')
 
-        cifinish_path = join(self.sd, 'cifinish.bin')
+        if self.cifinish_out:
+            cifinish_path = self.cifinish_out
+        else:
+            cifinish_path = join(self.sd, 'cifinish.bin')
         sd_path = join(sd_path, id1s[0])
         title_info_entries = {}
         cifinish_data = load_cifinish(cifinish_path)
+
+        load_seeddb(self.seeddb)
 
         # Now loop through all provided cia files
         
         for c in self.cias:
             self.log('Reading ' + c)
 
-            cia = CIAReader(c, seeddb=self.seeddb)
+            try:
+                cia = CIAReader(c)
+            except Exception as e:
+                self.log(f'Failed to load file: {type(e).__name__}: {e}')
+                continue
+
             self.cia = cia
             
             tid_parts = (cia.tmd.title_id[0:8], cia.tmd.title_id[8:16])
@@ -229,20 +237,20 @@ class CustomInstall:
             title_root_cmd = f'/title/{"/".join(tid_parts)}'
             content_root_cmd = title_root_cmd + '/content'
 
-            makedirs(join(content_root, 'cmd'), exist_ok=True)
-            if cia.tmd.save_size:
-                makedirs(join(title_root, 'data'), exist_ok=True)
-            if is_dlc:
-                # create the separate directories for every 256 contents
-                for x in range(((len(cia.content_info) - 1) // 256) + 1):
-                    makedirs(join(content_root, f'{x:08x}'))
-
-            # maybe this will be changed in the future
-            tmd_id = 0
-
-            tmd_filename = f'{tmd_id:08x}.tmd'
-
             if not self.skip_contents:
+                makedirs(join(content_root, 'cmd'), exist_ok=True)
+                if cia.tmd.save_size:
+                    makedirs(join(title_root, 'data'), exist_ok=True)
+                if is_dlc:
+                    # create the separate directories for every 256 contents
+                    for x in range(((len(cia.content_info) - 1) // 256) + 1):
+                        makedirs(join(content_root, f'{x:08x}'), exist_ok=True)
+
+                # maybe this will be changed in the future
+                tmd_id = 0
+
+                tmd_filename = f'{tmd_id:08x}.tmd'
+
                 # write the tmd
                 enc_path = content_root_cmd + '/' + tmd_filename
                 self.log(f'Writing {enc_path}...')
@@ -367,36 +375,41 @@ class CustomInstall:
 
             title_info_entries[cia.tmd.title_id] = b''.join(title_info_entry_data)
 
-            cifinish_data[int(cia.tmd.title_id, 16)] = {'seed': (cia.contents[0].seed if cia.contents[0].flags.uses_seed else None)}
+            cifinish_data[int(cia.tmd.title_id, 16)] = {'seed': (get_seed(cia.contents[0].program_id) if cia.contents[0].flags.uses_seed else None)}
 
+        # This is saved regardless if any titles were installed, so the file can be upgraded just in case.
         save_cifinish(cifinish_path, cifinish_data)
 
-        with TemporaryDirectory(suffix='-custom-install') as tempdir:
-            # set up the common arguments for the two times we call save3ds_fuse
-            save3ds_fuse_common_args = [
-                join(script_dir, 'bin', platform, 'save3ds_fuse'),
-                '-b', crypto.b9_path,
-                '-m', self.movable,
-                '--sd', self.sd,
-                '--db', 'sdtitle',
-                tempdir
-            ]
+        if title_info_entries:
+            with TemporaryDirectory(suffix='-custom-install') as tempdir:
+                # set up the common arguments for the two times we call save3ds_fuse
+                save3ds_fuse_common_args = [
+                    join(script_dir, 'bin', platform, 'save3ds_fuse'),
+                    '-b', crypto.b9_path,
+                    '-m', self.movable,
+                    '--sd', self.sd,
+                    '--db', 'sdtitle',
+                    tempdir
+                ]
 
-            # extract the title database to add our own entry to
-            self.log('Extracting Title Database...')
-            subprocess.run(save3ds_fuse_common_args + ['-x'])
+                # extract the title database to add our own entry to
+                self.log('Extracting Title Database...')
+                subprocess.run(save3ds_fuse_common_args + ['-x'])
 
-            for title_id, entry in title_info_entries.items():
-                # write the title info entry to the temp directory
-                with open(join(tempdir, title_id), 'wb') as o:
-                    o.write(entry)
+                for title_id, entry in title_info_entries.items():
+                    # write the title info entry to the temp directory
+                    with open(join(tempdir, title_id), 'wb') as o:
+                        o.write(entry)
 
-            # import the directory, now including our title
-            self.log('Importing into Title Database...')
-            subprocess.run(save3ds_fuse_common_args + ['-i'])
+                # import the directory, now including our title
+                self.log('Importing into Title Database...')
+                subprocess.run(save3ds_fuse_common_args + ['-i'])
 
-        self.log('FINAL STEP:\nRun custom-install-finalize through homebrew launcher.')
-        self.log('This will install a ticket and seed if required.')
+            self.log('FINAL STEP:\nRun custom-install-finalize through homebrew launcher.')
+            self.log('This will install a ticket and seed if required.')
+
+        else:
+            self.log('Did not install any titles.', 2)
 
     def get_sd_path(self):
         sd_path = join(self.sd, 'Nintendo 3DS', self.crypto.id0.hex())
@@ -448,6 +461,7 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--seeddb', help='seeddb file')
     parser.add_argument('--sd', help='path to SD root', required=True)
     parser.add_argument('--skip-contents', help="don't add contents, only add title info entry", action='store_true')
+    parser.add_argument('--cifinish-out', help='path for cifinish.bin file, defaults to (SD root)/cifinish.bin')
 
 
     args = parser.parse_args()
@@ -457,6 +471,7 @@ if __name__ == "__main__":
                               cias=args.cia,
                               movable=args.movable,
                               sd=args.sd,
+                              cifinish_out=args.cifinish_out,
                               skip_contents=(args.skip_contents or False))
 
     def log_handle(msg, end='\n'):

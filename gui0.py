@@ -12,12 +12,6 @@ import tkinter.filedialog as tkfiledialog
 import style
 
 
-# BUTTON_COLOR =
-# BUTTON_HIGHLIGHT_COLOR =  
-# BUTTON_FONT = 
-
-# Custom button
-
 class themedFrame(tk.Frame):
     def __init__(self, frame, **kw):
         tk.Frame.__init__(self, frame, **kw)
@@ -403,7 +397,7 @@ class gui(tk.Tk):
                            (os.path.isfile(os.path.join(cia_dir_to_add, f)) and f.endswith(".cia"))]
             if cias_to_add:
                 for cia_to_add in cias_to_add:
-                    self.cia_box.insert('end', cia_to_add)
+                    self.cia_box.insert('end', os.path.join(cia_dir_to_add, cia_to_add))
 
     def remove_cia(self):
         index = self.cia_box.curselection()
@@ -422,8 +416,8 @@ class gui(tk.Tk):
 
 def execute_script(args_extra, printer):
     """Wrapper function to pipe install script output to a printer"""
+    args = [sys.executable, '-u', os.path.join(os.path.dirname(__file__), "custominstall.py")]
     try:
-        args = [sys.executable, '-u', os.path.join(os.path.dirname(__file__), "custominstall.py")]
         args.extend(args_extra)
         p = subprocess.Popen(args,
                              stdout=subprocess.PIPE,
@@ -435,7 +429,7 @@ def execute_script(args_extra, printer):
                 printer(line)
         p.wait()
     except Exception as e:
-        printer(f"Error while executing script with args - {argstring} | Exception - {e}\n")
+        printer(f"Error while executing script with args - {args} | Exception - {e}\n")
 
 
 t = threader_object()
