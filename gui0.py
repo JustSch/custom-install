@@ -430,7 +430,6 @@ def execute_script(args_extra, printer):
                              stderr=subprocess.STDOUT,
                              bufsize=1,
                              )
-
         with p.stdout:
             for line in iter(p.stdout.readline, b''):
                 printer(line)

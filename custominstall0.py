@@ -449,6 +449,7 @@ if __name__ == "__main__":
     parser.add_argument('--sd', help='path to SD root', required=True)
     parser.add_argument('--skip-contents', help="don't add contents, only add title info entry", action='store_true')
 
+
     args = parser.parse_args()
 
     installer = CustomInstall(boot9=args.boot9,
